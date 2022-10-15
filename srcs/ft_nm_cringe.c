@@ -29,6 +29,13 @@ void ft_nm(char *filename)
 		return;
 	}
 
+	if (file_infos.st_size < EI_NIDENT) // If we cannot get identification infos (magic number, architecture etc.)
+	{
+		ft_printf("File '%s' has been truncated\n", filename);
+		close(fd);
+		return;
+	}
+
 	// open read only (and not shared with other processes)
 	if((file_content = mmap(NULL, file_infos.st_size, PROT_READ, MAP_PRIVATE, fd, 0)) == MAP_FAILED)
 	{
@@ -70,6 +77,13 @@ void ft_nm(char *filename)
 
 		if (class == 2)
 		{
+			if (file_infos.st_size < sizeof(Elf64_Ehdr))
+			{
+				ft_printf("File '%s' header has been truncated\n", filename);
+				close (fd);
+				return;
+			}
+
 			Elf64_Ehdr header = *(Elf64_Ehdr *)file_content;
 
 			printf("Test: %x\n", header.e_entry);
@@ -77,7 +91,7 @@ void ft_nm(char *filename)
 	}
 	else
 	{
-		ft_printf("File is not an ELF file\n");
+		ft_printf("File '%s' is not an ELF file\n", filename);
 		return;
 	}
 }

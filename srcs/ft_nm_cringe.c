@@ -4,14 +4,11 @@
 #include <stdio.h>
 #include <sys/mman.h>
 #include <stdint.h>
+
+// https://github.com/torvalds/linux/blob/master/include/uapi/linux/elf.h
 #include <elf.h>
 
 #include "./libft/libft.h"
-
-
-#define ELF_MAGIC_NUMBER 0x7F454C46
-#define ELF_CIGAM_NUMBER 0x464C457F // reverse depending on endian
-
 
 void ft_nm(char *filename)
 {
@@ -42,23 +39,47 @@ void ft_nm(char *filename)
 
 	// from the man, we can close the fd without invalidating the mapping, so close it asap
 	close(fd);
-
-	// just to have 4 bytes system independant
-	uint32_t magic_number = *(uint32_t *)file_content; // cast to retrieve first 4 bytes and not only 1
-
-
 	ft_printf("File %s successfully opened and mapped\n", filename);
-	if (magic_number == ELF_MAGIC_NUMBER || magic_number == ELF_CIGAM_NUMBER)
+
+
+	// only read first bytes to check magic number and 32/64 bits
+	// see https://github.com/torvalds/linux/blob/master/include/uapi/linux/elf.h
+	// and https://en.wikipedia.org/wiki/Executable_and_Linkable_Format
+	unsigned char *elf_identification = (unsigned char*)file_content;
+
+	if (elf_identification[EI_MAG0] == ELFMAG0 && elf_identification[EI_MAG1] == ELFMAG1 && elf_identification[EI_MAG2] == ELFMAG2 && elf_identification[EI_MAG3] == ELFMAG3)
 	{
 		ft_printf("File is an ELF file\n");
+
+		unsigned char class = elf_identification[EI_CLASS];
+
+		if (class == 1)
+		{
+			ft_printf("File is 32bit\n");
+		}
+		else if(class == 2)
+		{
+			ft_printf("File is 64bit\n");
+		}
+		else
+		{
+			ft_printf("Invalid TODO\n");
+			return;
+		}
+
+
+		if (class == 2)
+		{
+			Elf64_Ehdr header = *(Elf64_Ehdr *)file_content;
+
+			printf("Test: %x\n", header.e_entry);
+		}
 	}
 	else
 	{
 		ft_printf("File is not an ELF file\n");
 		return;
 	}
-
-
 }
 
 // https://medium.com/a-42-journey/nm-otool-everything-you-need-to-know-to-build-your-own-7d4fef3d7507

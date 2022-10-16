@@ -10,6 +10,21 @@
 
 #include "./libft/libft.h"
 
+void nm_64bits(char *filename, char *file_content, size_t file_size)
+{
+	if (file_size < sizeof(Elf64_Ehdr))
+	{
+		ft_printf("File '%s' header has been truncated\n", filename);
+		return;
+	}
+	//http://www.skyfree.org/linux/references/ELF_Format.pdf
+
+	Elf64_Ehdr header = *(Elf64_Ehdr *)file_content;
+
+
+	printf("Test: %x\n", header.e_entry);
+}
+
 void ft_nm(char *filename)
 {
 	int fd;
@@ -56,38 +71,36 @@ void ft_nm(char *filename)
 
 	if (elf_identification[EI_MAG0] == ELFMAG0 && elf_identification[EI_MAG1] == ELFMAG1 && elf_identification[EI_MAG2] == ELFMAG2 && elf_identification[EI_MAG3] == ELFMAG3)
 	{
-		ft_printf("File is an ELF file\n");
+		if (elf_identification[EI_VERSION] != EV_CURRENT)
+		{
+			ft_printf("File '%s' ELF version is invalid\n", filename);
+			return;
+		}
 
+		int is_32bits;
 		unsigned char class = elf_identification[EI_CLASS];
 
 		if (class == 1)
 		{
-			ft_printf("File is 32bit\n");
+			is_32bits = 1;
 		}
 		else if(class == 2)
 		{
-			ft_printf("File is 64bit\n");
+			is_32bits = 0;
 		}
 		else
 		{
-			ft_printf("Invalid TODO\n");
+			ft_printf("File '%s' header is invalid\n", filename);
 			return;
 		}
 
 
-		if (class == 2)
+		if (is_32bits)
 		{
-			if (file_infos.st_size < sizeof(Elf64_Ehdr))
-			{
-				ft_printf("File '%s' header has been truncated\n", filename);
-				close (fd);
-				return;
-			}
 
-			Elf64_Ehdr header = *(Elf64_Ehdr *)file_content;
-
-			printf("Test: %x\n", header.e_entry);
 		}
+		else
+			nm_64bits(filename, file_content, file_infos.st_size);
 	}
 	else
 	{

@@ -10,11 +10,45 @@
 #include <sys/time.h>
 #include <linux/icmp.h>
 #include <netinet/ip.h>
+#include <signal.h>
 
 #include <libft.h>
 #include "./ft_ping.h"
 
 struct s_ping_config g_ping_config;
+
+double get_elapsed_ms(struct timeval *start, struct timeval *end)
+{
+	time_t elapsed_secs = end->tv_sec - start->tv_sec;
+	suseconds_t elapsed_usecs = end->tv_usec - start->tv_usec;
+
+	return elapsed_secs * 1000.0 + elapsed_usecs / 1000.0;
+}
+
+void handle_sigint(int signal)
+{
+	if (signal != SIGINT)
+		return;
+
+	struct timeval now;
+
+	if (gettimeofday(&now, NULL) == -1)
+	{
+		fprintf(stderr, "ft_ping: An error occured while fetching end time: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
+	double program_total_time_ms = get_elapsed_ms(&g_ping_config.start_time, &now);
+
+	printf("\n--- %s ping statistics ---\n", g_ping_config.hostname);
+	int pkt_losts = g_ping_config.stats.transmitted_pkts - g_ping_config.stats.received_pkts;
+	int pkt_loss = g_ping_config.stats.transmitted_pkts == 0 ? 0 : pkt_losts / g_ping_config.stats.transmitted_pkts;
+	printf("%d packets transmitted, %d received, %d%% packet loss, time %dms\n", g_ping_config.stats.transmitted_pkts, g_ping_config.stats.received_pkts, pkt_loss, (int)program_total_time_ms);
+	// RTT = Round Trip Time
+	printf("rtt min/avg/max = %.03f/%.03f/%.03f ms\n", g_ping_config.stats.min_ping_time, g_ping_config.stats.avg_ping_time, g_ping_config.stats.max_ping_time);
+
+	exit(EXIT_SUCCESS);
+}
 
 void show_usage()
 {
@@ -102,6 +136,11 @@ int main(int argc, char **argv)
 
 
 	int sockfd;
+	if (signal(SIGINT, &handle_sigint) == SIG_ERR)
+	{
+		fprintf(stderr, "ft_ping: Cannot set-up signal handler: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
 
 	// https://stackoverflow.com/questions/8290046/icmp-sockets-linux
 	if ((sockfd = socket(PF_INET, SOCK_DGRAM, IPPROTO_ICMP)) == -1)
@@ -166,6 +205,12 @@ int main(int argc, char **argv)
 	struct timeval start_time;
 	struct timeval end_time;
 
+	if (gettimeofday(&g_ping_config.start_time, NULL) == -1)
+	{
+		fprintf(stderr, "ft_ping: An error occured while fetching start time: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
 	printf("PING %s (%s) %d bytes of data.\n", g_ping_config.hostname, ipv4_str, g_ping_config.packet_size);
 
 	while (1)
@@ -196,6 +241,7 @@ int main(int argc, char **argv)
 			usleep(g_ping_config.ping_interval * 1000 * 1000);
 			continue;
 		}
+		g_ping_config.stats.transmitted_pkts++;
 
 		// printf("Sent packed to %s\n", addrstr);
 
@@ -220,7 +266,8 @@ int main(int argc, char **argv)
 
 		if (recvmsg(sockfd, &received_msg, 0) == -1)
 		{
-			fprintf(stderr, "An error occured while receiving packet from %s\n", ipv4_str);
+			if (g_ping_config.flags & FLAG_VERBOSE)
+				fprintf(stderr, "An error occured while receiving packet from %s\n", ipv4_str);
 			if (errno != EAGAIN) // If timeout, don't re-wait another second before pinging, but ping directly
 				usleep(g_ping_config.ping_interval * 1000 * 1000);
 
@@ -233,10 +280,28 @@ int main(int argc, char **argv)
 			exit(EXIT_FAILURE);
 		}
 
-		time_t elapsed_secs = end_time.tv_sec - start_time.tv_sec;
-		suseconds_t elapsed_usecs = end_time.tv_usec - start_time.tv_usec;
+		g_ping_config.stats.received_pkts++;
+		double elapsed_ms = get_elapsed_ms(&start_time, &end_time);
 
-		double elapsed_ms = elapsed_secs * 1000.0 + elapsed_usecs / 1000.0;
+		if (g_ping_config.stats.received_pkts == 1)
+		{
+			g_ping_config.stats.min_ping_time = elapsed_ms;
+			g_ping_config.stats.avg_ping_time = elapsed_ms;
+			g_ping_config.stats.max_ping_time = elapsed_ms;
+		}
+		else
+		{
+			if (elapsed_ms < g_ping_config.stats.min_ping_time)
+				g_ping_config.stats.min_ping_time = elapsed_ms;
+
+			if (elapsed_ms > g_ping_config.stats.max_ping_time)
+				g_ping_config.stats.max_ping_time = elapsed_ms;
+
+			double new_avg = g_ping_config.stats.avg_ping_time * (g_ping_config.stats.received_pkts - 1);
+			new_avg += elapsed_ms;
+			new_avg /= g_ping_config.stats.received_pkts;
+			g_ping_config.stats.avg_ping_time = new_avg;
+		}
 
 		int received_ttl = -1;
 		// see example: https://man7.org/linux/man-pages/man3/cmsg.3.html

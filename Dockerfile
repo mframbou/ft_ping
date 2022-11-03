@@ -1,7 +1,7 @@
-FROM alpine
+FROM debian
 
 # https://github.com/gliderlabs/docker-alpine/issues/24
-RUN apk update && apk add alpine-sdk zsh && mkdir -p /ft_nm
+RUN apt-get update && apt-get -y install build-essential zsh iputils-ping && mkdir -p /mframbou
 
-WORKDIR /ft_nm
+WORKDIR /mframbou
 CMD ["zsh"]

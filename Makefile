@@ -1,5 +1,7 @@
+NAME = ft_ping
+
 run:
 	@echo building container
-	docker build -t ft_nm ./
+	docker build -t $(NAME) ./
 	@echo starting container
-	docker run -v "$(PWD)/srcs":/ft_nm -it ft_nm
+	docker run -v "$(PWD)/srcs":/mframbou -it $(NAME)

@@ -5,11 +5,11 @@ OBJS = $(SRCS:.c=.o)
 LIBFT = ./libft/libft.a
 LIBFT_FOLDER = ./libft
 
-NAME = ft_nm
+NAME = ft_ping
 
 CC = gcc
 
-CFLAGS = # -Wall -Wextra -Werror
+CFLAGS = -I./libft # -Wall -Wextra -Werror
 
 SHELL = zsh
 
@@ -46,7 +46,7 @@ $(NAME):	$(LIBFT) $(OBJS)
 all:		$(NAME)
 
 $(LIBFT):
-	@$(MAKE) -C $(LIBFT_FOLDER) NO_FT_MALLOC=1 NO_GNL=1
+	@$(MAKE) -C $(LIBFT_FOLDER) NO_FT_MALLOC=1 NO_GNL=1 NO_FT_PRINTF=1
 
 clean:
 	@rm -f $(OBJS)

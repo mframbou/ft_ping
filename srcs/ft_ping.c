@@ -64,6 +64,14 @@ void show_usage()
 	fprintf(stderr, " <destination>\tDNS name or ip address\n");
 	fprintf(stderr, " -v\t\tVerbose output\n");
 	fprintf(stderr, " -h\t\tPrint help and exit\n");
+
+	fprintf(stderr, " -b\t\tAllow pinging broadcast\n");
+	fprintf(stderr, " -d\t\tUse SO_DEBUG socket option\n");
+	fprintf(stderr, " -q\t\tquiet output\n");
+	fprintf(stderr, " -t <ttl>\tDefine time to live\n");
+
+	fprintf(stderr, "\nIPv4 options:\n");
+	fprintf(stderr, " -4\t\tUse IPv4\n");
 }
 
 struct addrinfo *get_hostname_address(const char *hostname)
@@ -88,15 +96,17 @@ struct ping_pkt
 };
 
 
-// Calculating the Check Sum
+// https://en.wikipedia.org/wiki/Internet_checksum#:~:text=The%20Internet%20checksum%20is%20mandatory,packets%20(including%20data%20payload).
+// https://stackoverflow.com/questions/55218931/calculating-checksum-for-icmp-echo-request-in-python
 unsigned short checksum(void *b, int len)
-{    unsigned short *buf = b;
-    unsigned int sum=0;
+{
+	unsigned short *buf = b;
     unsigned short result;
+    unsigned int sum = 0;
 
-    for ( sum = 0; len > 1; len -= 2 )
+    for (sum = 0; len > 1; len -= 2)
         sum += *buf++;
-    if ( len == 1 )
+    if (len == 1)
         sum += *(unsigned char*)buf;
     sum = (sum >> 16) + (sum & 0xFFFF);
     sum += (sum >> 16);
@@ -104,6 +114,125 @@ unsigned short checksum(void *b, int len)
     return result;
 }
 
+void ft_ping(int sockfd, struct addrinfo *address_info)
+{
+	void *ptr = &((struct sockaddr_in *) address_info->ai_addr)->sin_addr;
+	inet_ntop(address_info->ai_family, ptr, g_ping_config.hostname_ip_str, sizeof(g_ping_config.hostname_ip_str));
+
+	struct ping_pkt pkt;
+	int msg_count = 0;
+
+	char pkt_msg[g_ping_config.packet_size - sizeof(struct icmphdr)];
+	// https://github.com/dtaht/twd/blob/master/recvmsg.c
+	char received_msg_buf[1024];
+	struct msghdr received_msg;
+	struct iovec iov;
+	struct timeval start_time;
+	struct timeval end_time;
+	ft_bzero(&pkt, sizeof(pkt));
+	pkt.msg = pkt_msg;
+	pkt.hdr.type = ICMP_ECHO;
+	pkt.hdr.un.echo.id = getpid();
+
+	int i;
+
+	for (i = 0; i < sizeof(pkt.msg) - 1; i++)
+		pkt.msg[i] = i + '0';
+
+	pkt.msg[i] = 0;
+	pkt.hdr.un.echo.sequence = msg_count++;
+	pkt.hdr.checksum = checksum(&pkt, sizeof(pkt));
+
+	if (gettimeofday(&start_time, NULL) == -1)
+	{
+		fprintf(stderr, "ft_ping: An error occured while fetching start time: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
+	g_ping_config.stats.transmitted_pkts++;
+	if (sendto(sockfd, &pkt, sizeof(pkt), 0, address_info->ai_addr, address_info->ai_addrlen) == -1)
+	{
+		if (g_ping_config.flags & FLAG_VERBOSE)
+			fprintf(stderr, "An error occured while sending packet to %s\n", g_ping_config.hostname_ip_str);
+		return;
+	}
+
+	// printf("Sent packed to %s\n", addrstr);
+
+	ft_bzero(&received_msg, sizeof(received_msg));
+
+	received_msg.msg_name = received_msg_buf;
+	received_msg.msg_namelen = sizeof(received_msg_buf);
+	ft_bzero(&iov, sizeof(iov));
+	received_msg.msg_iov = &iov;
+	received_msg.msg_iovlen = 1;
+	iov.iov_base = (char *) &pkt;
+	iov.iov_len = sizeof(pkt);
+
+	char buf[CMSG_SPACE(sizeof(int))];
+	received_msg.msg_control = buf;
+	received_msg.msg_controllen = sizeof(buf);
+
+	if (recvmsg(sockfd, &received_msg, 0) == -1)
+	{
+		if (g_ping_config.flags & FLAG_VERBOSE)
+			fprintf(stderr, "An error occured while receiving packet from %s\n", g_ping_config.hostname_ip_str);
+
+		return;
+	}
+
+	if (gettimeofday(&end_time, NULL) == -1)
+	{
+		fprintf(stderr, "ft_ping: An error occured while fetching end time: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
+	g_ping_config.stats.received_pkts++;
+	double elapsed_ms = get_elapsed_ms(&start_time, &end_time);
+
+	if (g_ping_config.stats.received_pkts == 1)
+	{
+		g_ping_config.stats.min_ping_time = elapsed_ms;
+		g_ping_config.stats.avg_ping_time = elapsed_ms;
+		g_ping_config.stats.max_ping_time = elapsed_ms;
+	}
+	else
+	{
+		if (elapsed_ms < g_ping_config.stats.min_ping_time)
+			g_ping_config.stats.min_ping_time = elapsed_ms;
+
+		if (elapsed_ms > g_ping_config.stats.max_ping_time)
+			g_ping_config.stats.max_ping_time = elapsed_ms;
+
+		double new_avg = g_ping_config.stats.avg_ping_time * (g_ping_config.stats.received_pkts - 1);
+		new_avg += elapsed_ms;
+		new_avg /= g_ping_config.stats.received_pkts;
+		g_ping_config.stats.avg_ping_time = new_avg;
+	}
+
+	int received_ttl = -1;
+	// see example: https://man7.org/linux/man-pages/man3/cmsg.3.html
+	// also https://github.com/dtaht/twd/blob/master/recvmsg.c
+	for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&received_msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&received_msg, cmsg))
+	{
+		if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_TTL)
+		{
+			ft_memcpy(&received_ttl, CMSG_DATA(cmsg), sizeof(received_ttl));
+			break;
+		}
+	}
+
+	printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d time=%.1f ms\n", g_ping_config.packet_size, g_ping_config.hostname, g_ping_config.hostname_ip_str, msg_count, received_ttl, elapsed_ms);
+}
+
+void handle_sigalarm(int signal)
+{
+	if (signal != SIGALRM)
+		return;
+
+	alarm(g_ping_config.ping_interval);
+	ft_ping(g_ping_config.sockfd, g_ping_config.target_addr);
+}
 
 int main(int argc, char **argv)
 {
@@ -113,7 +242,7 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	bzero(&g_ping_config, sizeof(g_ping_config));
+	ft_bzero(&g_ping_config, sizeof(g_ping_config));
 
 	g_ping_config.packet_size = DEFAULT_PING_PACKET_SIZE;
 	g_ping_config.ping_interval = DEFAULT_PING_INTERVAL;
@@ -188,7 +317,13 @@ int main(int argc, char **argv)
 	int sockfd;
 	if (signal(SIGINT, &handle_sigint) == SIG_ERR)
 	{
-		fprintf(stderr, "ft_ping: Cannot set-up signal handler: %s\n", strerror(errno));
+		fprintf(stderr, "ft_ping: Cannot set-up SIGINT signal handler: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
+	if (signal(SIGALRM, &handle_sigalarm)== SIG_ERR)
+	{
+		fprintf(stderr, "ft_ping: Cannot set-up SIGALRM signal handler: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
@@ -198,6 +333,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "ft_ping: An error occured while creating socket: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
+
+	g_ping_config.sockfd = sockfd;
 
 	struct timeval recv_timeout;
 	recv_timeout.tv_sec = g_ping_config.recv_timeout;
@@ -235,8 +372,9 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	char ipv4_str[INET_ADDRSTRLEN];
-	inet_ntop(address_info->ai_family, address_info->ai_addr->sa_data, ipv4_str, 100);
+
+	void *ptr = &((struct sockaddr_in *) address_info->ai_addr)->sin_addr;
+	inet_ntop(address_info->ai_family, ptr, g_ping_config.hostname_ip_str, sizeof(g_ping_config.hostname_ip_str));
 
 	if (address_info->ai_family != AF_INET)
 	{
@@ -245,6 +383,8 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
+	g_ping_config.target_addr = address_info;
+
 	struct sockaddr_in *addr = (struct sockaddr_in *)address_info->ai_addr;
 	if (addr->sin_addr.s_addr == INADDR_BROADCAST && (g_ping_config.flags & FLAG_ALLOW_BROADCAST) == 0)
 	{
@@ -252,135 +392,16 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-
-	void *ptr = &((struct sockaddr_in *) address_info->ai_addr)->sin_addr;
-	inet_ntop(address_info->ai_family, ptr, ipv4_str, sizeof(ipv4_str));
-
-	struct ping_pkt pkt;
-	int msg_count = 0;
-
-	char pkt_msg[g_ping_config.packet_size - sizeof(struct icmphdr)];
-
-	// https://github.com/dtaht/twd/blob/master/recvmsg.c
-	char received_msg_buf[128];
-	struct msghdr received_msg;
-	struct iovec iov;
-	struct timeval start_time;
-	struct timeval end_time;
-
 	if (gettimeofday(&g_ping_config.start_time, NULL) == -1)
 	{
 		fprintf(stderr, "ft_ping: An error occured while fetching start time: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
-	printf("PING %s (%s) %d bytes of data.\n", g_ping_config.hostname, ipv4_str, g_ping_config.packet_size);
+	printf("PING %s (%s) %d bytes of data.\n", g_ping_config.hostname, g_ping_config.hostname_ip_str, g_ping_config.packet_size);
 
-	while (1)
-	{
-		ft_bzero(&pkt, sizeof(pkt));
-		pkt.msg = pkt_msg;
-		pkt.hdr.type = ICMP_ECHO;
-        pkt.hdr.un.echo.id = getpid();
+	alarm(g_ping_config.ping_interval);
+	ft_ping(sockfd, address_info);
 
-		int i;
-
-        for (i = 0; i < sizeof(pkt.msg) - 1; i++)
-            pkt.msg[i] = i + '0';
-
-        pkt.msg[i] = 0;
-        pkt.hdr.un.echo.sequence = msg_count++;
-        pkt.hdr.checksum = checksum(&pkt, sizeof(pkt));
-
-		if (gettimeofday(&start_time, NULL) == -1)
-		{
-			fprintf(stderr, "ft_ping: An error occured while fetching start time: %s\n", strerror(errno));
-			exit(EXIT_FAILURE);
-		}
-
-		g_ping_config.stats.transmitted_pkts++;
-		if (sendto(sockfd, &pkt, sizeof(pkt), 0, address_info->ai_addr, address_info->ai_addrlen) == -1)
-		{
-			if (g_ping_config.flags & FLAG_VERBOSE)
-				fprintf(stderr, "An error occured while sending packet to %s\n", ipv4_str);
-			usleep(g_ping_config.ping_interval * 1000 * 1000);
-			continue;
-		}
-
-		// printf("Sent packed to %s\n", addrstr);
-
-		ft_bzero(&received_msg, sizeof(received_msg));
-
-		received_msg.msg_name = received_msg_buf;
-		received_msg.msg_namelen = sizeof(received_msg_buf);
-		ft_bzero(&iov, sizeof(iov));
-		received_msg.msg_iov = &iov;
-		received_msg.msg_iovlen = 1;
-		iov.iov_base = (char *) &pkt;
-		iov.iov_len = sizeof(pkt);
-
-
-
-
-		int cmsg_size = sizeof(struct cmsghdr)+sizeof(int); // NOTE: Size of header + size of data
-		char buf[CMSG_SPACE(sizeof(int))];
-		received_msg.msg_control = buf; // Assign buffer space for control header + header data/value
-		received_msg.msg_controllen = sizeof(buf); //just initializing it
-
-
-		if (recvmsg(sockfd, &received_msg, 0) == -1)
-		{
-			if (g_ping_config.flags & FLAG_VERBOSE)
-				fprintf(stderr, "An error occured while receiving packet from %s\n", ipv4_str);
-			if (errno != EAGAIN) // If timeout, don't re-wait another second before pinging, but ping directly
-				usleep(g_ping_config.ping_interval * 1000 * 1000);
-
-			continue;
-		}
-
-		if (gettimeofday(&end_time, NULL) == -1)
-		{
-			fprintf(stderr, "ft_ping: An error occured while fetching end time: %s\n", strerror(errno));
-			exit(EXIT_FAILURE);
-		}
-
-		g_ping_config.stats.received_pkts++;
-		double elapsed_ms = get_elapsed_ms(&start_time, &end_time);
-
-		if (g_ping_config.stats.received_pkts == 1)
-		{
-			g_ping_config.stats.min_ping_time = elapsed_ms;
-			g_ping_config.stats.avg_ping_time = elapsed_ms;
-			g_ping_config.stats.max_ping_time = elapsed_ms;
-		}
-		else
-		{
-			if (elapsed_ms < g_ping_config.stats.min_ping_time)
-				g_ping_config.stats.min_ping_time = elapsed_ms;
-
-			if (elapsed_ms > g_ping_config.stats.max_ping_time)
-				g_ping_config.stats.max_ping_time = elapsed_ms;
-
-			double new_avg = g_ping_config.stats.avg_ping_time * (g_ping_config.stats.received_pkts - 1);
-			new_avg += elapsed_ms;
-			new_avg /= g_ping_config.stats.received_pkts;
-			g_ping_config.stats.avg_ping_time = new_avg;
-		}
-
-		int received_ttl = -1;
-		// see example: https://man7.org/linux/man-pages/man3/cmsg.3.html
-		// also https://github.com/dtaht/twd/blob/master/recvmsg.c
-		for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&received_msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&received_msg, cmsg))
-		{
-			if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_TTL)
-			{
-				ft_memcpy(&received_ttl, CMSG_DATA(cmsg), sizeof(received_ttl));
-				break;
-			}
-		}
-
-		printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d time=%.1f ms\n", g_ping_config.packet_size, g_ping_config.hostname, ipv4_str, msg_count, received_ttl, elapsed_ms);
-
-		usleep(g_ping_config.ping_interval * 1000 * 1000);
-	}
+	for(;;);
 }

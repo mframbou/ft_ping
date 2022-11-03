@@ -22,8 +22,11 @@ struct s_ping_stats
 
 struct s_ping_config
 {
+	int sockfd;
+	struct addrinfo *target_addr;
+
 	char *hostname;
-	char *hostname_ip_str;
+	char hostname_ip_str[INET_ADDRSTRLEN];
 	unsigned char ttl;
 	unsigned int flags;
 	unsigned int recv_timeout;

@@ -12,10 +12,9 @@
 #include <netinet/ip.h>
 
 #include <libft.h>
+#include "./ft_ping.h"
 
-#define FLAG_VERBOSE 0x1
-#define WAIT_INTERVAL_SEC 1
-#define PING_PKT_SIZE 64
+struct s_ping_config g_ping_config;
 
 void show_usage()
 {
@@ -47,7 +46,7 @@ struct addrinfo *get_hostname_address(const char *hostname)
 struct ping_pkt
 {
     struct icmphdr hdr;
-    char msg[PING_PKT_SIZE - sizeof(struct icmphdr)];
+    char *msg;
 };
 
 
@@ -76,9 +75,12 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	const char *ping_hostname = NULL;
-	unsigned long flags = 0;
+	bzero(&g_ping_config, sizeof(g_ping_config));
 
+	g_ping_config.packet_size = DEFAULT_PING_PACKET_SIZE;
+	g_ping_config.ping_interval = DEFAULT_PING_INTERVAL;
+	g_ping_config.recv_timeout = DEFAULT_PING_RECV_TIMEOUT;
+	g_ping_config.ttl = DEFAULT_PING_TTL;
 
 	for (int i = 1; i < argc; i++)
 	{
@@ -89,18 +91,15 @@ int main(int argc, char **argv)
 		}
 		else if (!ft_strcmp(argv[i], "-v"))
 		{
-			flags |= FLAG_VERBOSE;
+			g_ping_config.flags |= FLAG_VERBOSE;
 		}
 		else
 		{
-			ping_hostname = argv[i];
+			g_ping_config.hostname = argv[i];
+			g_ping_config.hostname = argv[i];
 		}
 	}
 
-	if (flags & FLAG_VERBOSE)
-	{
-		printf("Verbose mode\n");
-	}
 
 	int sockfd;
 
@@ -112,18 +111,16 @@ int main(int argc, char **argv)
 	}
 
 	struct timeval recv_timeout;
-	recv_timeout.tv_sec = WAIT_INTERVAL_SEC;
+	recv_timeout.tv_sec = g_ping_config.recv_timeout;
 	recv_timeout.tv_usec = 0;
 
-
-	unsigned char ttl = 2;
-	if (setsockopt(sockfd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) == -1)
+	if (setsockopt(sockfd, IPPROTO_IP, IP_TTL, &g_ping_config.ttl, sizeof(g_ping_config.ttl)) == -1)
 	{
 		fprintf(stderr, "ft:ping: An error occured while setting socket TTL send: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
-	if (setsockopt(sockfd, IPPROTO_IP, IP_RECVTTL, &ttl, sizeof(ttl)) == -1)
+	if (setsockopt(sockfd, IPPROTO_IP, IP_RECVTTL, &g_ping_config.ttl, sizeof(g_ping_config.ttl)) == -1)
 	{
 		fprintf(stderr, "ft:ping: An error occured while setting socket TTL receive: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
@@ -137,7 +134,7 @@ int main(int argc, char **argv)
 
 	struct addrinfo *address_info;
 
-	if ((address_info = get_hostname_address(ping_hostname)) == NULL)
+	if ((address_info = get_hostname_address(g_ping_config.hostname)) == NULL)
 	{
 		close(sockfd);
 		exit(EXIT_FAILURE);
@@ -160,6 +157,8 @@ int main(int argc, char **argv)
 	struct ping_pkt pkt;
 	int msg_count = 0;
 
+	char pkt_msg[g_ping_config.packet_size - sizeof(struct icmphdr)];
+
 	// https://github.com/dtaht/twd/blob/master/recvmsg.c
 	char received_msg_buf[128];
 	struct msghdr received_msg;
@@ -167,11 +166,12 @@ int main(int argc, char **argv)
 	struct timeval start_time;
 	struct timeval end_time;
 
-	printf("PING %s (%s) %d bytes of data.\n", ping_hostname, ipv4_str, PING_PKT_SIZE);
+	printf("PING %s (%s) %d bytes of data.\n", g_ping_config.hostname, ipv4_str, g_ping_config.packet_size);
 
 	while (1)
 	{
 		ft_bzero(&pkt, sizeof(pkt));
+		pkt.msg = pkt_msg;
 		pkt.hdr.type = ICMP_ECHO;
         pkt.hdr.un.echo.id = getpid();
 
@@ -193,7 +193,7 @@ int main(int argc, char **argv)
 		if (sendto(sockfd, &pkt, sizeof(pkt), 0, address_info->ai_addr, address_info->ai_addrlen) == -1)
 		{
 			fprintf(stderr, "An error occured while sending packet to %s\n", ipv4_str);
-			usleep(WAIT_INTERVAL_SEC * 1000 * 1000);
+			usleep(g_ping_config.ping_interval * 1000 * 1000);
 			continue;
 		}
 
@@ -222,7 +222,7 @@ int main(int argc, char **argv)
 		{
 			fprintf(stderr, "An error occured while receiving packet from %s\n", ipv4_str);
 			if (errno != EAGAIN) // If timeout, don't re-wait another second before pinging, but ping directly
-				usleep(WAIT_INTERVAL_SEC * 1000 * 1000);
+				usleep(g_ping_config.ping_interval * 1000 * 1000);
 
 			continue;
 		}
@@ -250,6 +250,7 @@ int main(int argc, char **argv)
 			}
 		}
 
-		printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d time=%.1f ms\n", PING_PKT_SIZE, ping_hostname, ipv4_str, msg_count, received_ttl, elapsed_ms);
+		printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d time=%.1f ms\n", g_ping_config.packet_size, g_ping_config.hostname, ipv4_str, msg_count, received_ttl, elapsed_ms);
+		usleep(g_ping_config.ping_interval * 1000 * 1000);
 	}
 }

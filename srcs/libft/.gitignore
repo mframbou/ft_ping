@@ -2,8 +2,6 @@
 !*.c
 !*.h
 !Makefile
-!srcs
-!Dockerfile
 !.gitignore
-!libft/*
-!libft/
+
+!*/

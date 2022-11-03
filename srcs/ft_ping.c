@@ -25,11 +25,8 @@ double get_elapsed_ms(struct timeval *start, struct timeval *end)
 	return elapsed_secs * 1000.0 + elapsed_usecs / 1000.0;
 }
 
-void handle_sigint(int signal)
+void display_stats()
 {
-	if (signal != SIGINT)
-		return;
-
 	struct timeval now;
 
 	if (gettimeofday(&now, NULL) == -1)
@@ -42,11 +39,18 @@ void handle_sigint(int signal)
 
 	printf("\n--- %s ping statistics ---\n", g_ping_config.hostname);
 	int pkt_losts = g_ping_config.stats.transmitted_pkts - g_ping_config.stats.received_pkts;
-	int pkt_loss = g_ping_config.stats.transmitted_pkts == 0 ? 0 : pkt_losts / g_ping_config.stats.transmitted_pkts;
-	printf("%d packets transmitted, %d received, %d%% packet loss, time %dms\n", g_ping_config.stats.transmitted_pkts, g_ping_config.stats.received_pkts, pkt_loss, (int)program_total_time_ms);
+	double pkt_loss = g_ping_config.stats.transmitted_pkts == 0 ? 0 : pkt_losts / (double) g_ping_config.stats.transmitted_pkts;
+	printf("%d packets transmitted, %d received, %d%% packet loss, time %dms\n", g_ping_config.stats.transmitted_pkts, g_ping_config.stats.received_pkts, (int)(pkt_loss * 100), (int)program_total_time_ms);
 	// RTT = Round Trip Time
 	printf("rtt min/avg/max = %.03f/%.03f/%.03f ms\n", g_ping_config.stats.min_ping_time, g_ping_config.stats.avg_ping_time, g_ping_config.stats.max_ping_time);
+}
 
+void handle_sigint(int signal)
+{
+	if (signal != SIGINT)
+		return;
+
+	display_stats();
 	exit(EXIT_SUCCESS);
 }
 
@@ -127,11 +131,57 @@ int main(int argc, char **argv)
 		{
 			g_ping_config.flags |= FLAG_VERBOSE;
 		}
+		else if (!ft_strcmp(argv[i], "-d"))
+		{
+			g_ping_config.flags |= FLAG_DEBUG;
+		}
+		else if (!ft_strcmp(argv[i], "-q"))
+		{
+			g_ping_config.flags |= FLAG_QUIET;
+		}
+		else if (!ft_strcmp(argv[i], "-4"))
+		{
+			// do nothing :)
+		}
+		else if (!ft_strcmp(argv[i], "-b"))
+		{
+			g_ping_config.flags |= FLAG_ALLOW_BROADCAST;
+		}
+		else if (!ft_strcmp(argv[i], "-t"))
+		{
+			if (i + 1 >= argc)
+			{
+				fprintf(stderr, "ft_ping: option requires an argument -- 't'\n");
+				show_usage();
+				exit(EXIT_FAILURE);
+			}
+
+			if (ft_strlen(argv[i + 1]) > 3)
+			{
+				fprintf(stderr, "ft_ping: invalid argument: '%s': out of range: 0 <= value <= 255\n", argv[i + 1]);
+				exit(EXIT_FAILURE);
+			}
+			int ttl = ft_atoi(argv[i + 1]);
+			if (ttl < 0 || ttl > 255)
+			{
+				fprintf(stderr, "ft_ping: invalid argument: '%s': out of range: 0 <= value <= 255\n", argv[i + 1]);
+				exit(EXIT_FAILURE);
+			}
+
+			g_ping_config.ttl = ttl;
+			i++;
+		}
 		else
 		{
 			g_ping_config.hostname = argv[i];
 			g_ping_config.hostname = argv[i];
 		}
+	}
+
+	if (g_ping_config.hostname == NULL)
+	{
+		fprintf(stderr, "ft_ping: usage error: Destination address required\n");
+		exit(EXIT_FAILURE);
 	}
 
 
@@ -155,19 +205,25 @@ int main(int argc, char **argv)
 
 	if (setsockopt(sockfd, IPPROTO_IP, IP_TTL, &g_ping_config.ttl, sizeof(g_ping_config.ttl)) == -1)
 	{
-		fprintf(stderr, "ft:ping: An error occured while setting socket TTL send: %s\n", strerror(errno));
+		fprintf(stderr, "ft_ping: An error occured while setting socket TTL send: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
 	if (setsockopt(sockfd, IPPROTO_IP, IP_RECVTTL, &g_ping_config.ttl, sizeof(g_ping_config.ttl)) == -1)
 	{
-		fprintf(stderr, "ft:ping: An error occured while setting socket TTL receive: %s\n", strerror(errno));
+		fprintf(stderr, "ft_ping: An error occured while setting socket TTL receive: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
 	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &recv_timeout, sizeof(recv_timeout)) == -1)
 	{
-		fprintf(stderr, "ft:ping: An error occured while setting socket timeout: %s\n", strerror(errno));
+		fprintf(stderr, "ft_ping: An error occured while setting socket timeout: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
+	if ((g_ping_config.flags & FLAG_DEBUG) && setsockopt(sockfd, SOL_SOCKET, SO_DEBUG, NULL, 0))
+	{
+		fprintf(stderr, "ft_ping: Cannot set socket SO_DEBUG mode: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
@@ -186,6 +242,13 @@ int main(int argc, char **argv)
 	{
 		fprintf(stderr, "ft_ping: The given host address format is not supported\n");
 		close(sockfd);
+		exit(EXIT_FAILURE);
+	}
+
+	struct sockaddr_in *addr = (struct sockaddr_in *)address_info->ai_addr;
+	if (addr->sin_addr.s_addr == INADDR_BROADCAST && (g_ping_config.flags & FLAG_ALLOW_BROADCAST) == 0)
+	{
+		fprintf(stderr, "ft_ping: Do you want to ping broadcast? Then -b. If not, check your firewall rules\n");
 		exit(EXIT_FAILURE);
 	}
 
@@ -235,13 +298,14 @@ int main(int argc, char **argv)
 			exit(EXIT_FAILURE);
 		}
 
+		g_ping_config.stats.transmitted_pkts++;
 		if (sendto(sockfd, &pkt, sizeof(pkt), 0, address_info->ai_addr, address_info->ai_addrlen) == -1)
 		{
-			fprintf(stderr, "An error occured while sending packet to %s\n", ipv4_str);
+			if (g_ping_config.flags & FLAG_VERBOSE)
+				fprintf(stderr, "An error occured while sending packet to %s\n", ipv4_str);
 			usleep(g_ping_config.ping_interval * 1000 * 1000);
 			continue;
 		}
-		g_ping_config.stats.transmitted_pkts++;
 
 		// printf("Sent packed to %s\n", addrstr);
 
@@ -316,6 +380,7 @@ int main(int argc, char **argv)
 		}
 
 		printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d time=%.1f ms\n", g_ping_config.packet_size, g_ping_config.hostname, ipv4_str, msg_count, received_ttl, elapsed_ms);
+
 		usleep(g_ping_config.ping_interval * 1000 * 1000);
 	}
 }

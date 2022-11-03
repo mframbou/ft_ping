@@ -1,7 +1,10 @@
 #ifndef FT_PING_H
 #define FT_PING_H
 
-#define FLAG_VERBOSE 0x1
+#define FLAG_VERBOSE 1 << 1
+#define FLAG_DEBUG 1 << 2
+#define FLAG_QUIET 1 << 3
+#define FLAG_ALLOW_BROADCAST 1 << 4
 #define DEFAULT_PING_PACKET_SIZE 64
 #define DEFAULT_PING_INTERVAL 1
 #define DEFAULT_PING_RECV_TIMEOUT 1

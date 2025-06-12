@@ -16,6 +16,7 @@
 #include "./ft_ping.h"
 
 struct s_ping_config g_ping_config;
+unsigned int msg_count = 0;
 
 double get_elapsed_ms(struct timeval *start, struct timeval *end)
 {
@@ -120,7 +121,6 @@ void ft_ping(int sockfd, struct addrinfo *address_info)
 	inet_ntop(address_info->ai_family, ptr, g_ping_config.hostname_ip_str, sizeof(g_ping_config.hostname_ip_str));
 
 	struct ping_pkt pkt;
-	int msg_count = 0;
 
 	char pkt_msg[g_ping_config.packet_size - sizeof(struct icmphdr)];
 	// https://github.com/dtaht/twd/blob/master/recvmsg.c
@@ -222,7 +222,17 @@ void ft_ping(int sockfd, struct addrinfo *address_info)
 		}
 	}
 
-	printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d time=%.1f ms\n", g_ping_config.packet_size, g_ping_config.hostname, g_ping_config.hostname_ip_str, msg_count, received_ttl, elapsed_ms);
+	char resolved_hostname[NI_MAXHOST];
+	struct sockaddr_in *addr = (struct sockaddr_in *)received_msg.msg_name;
+	memset(resolved_hostname, 0, sizeof(resolved_hostname));
+
+	if (getnameinfo((struct sockaddr *)addr, sizeof(*addr), resolved_hostname, sizeof(resolved_hostname), NULL, 0, NI_NAMEREQD) != 0)
+	{
+		strncpy(resolved_hostname, g_ping_config.hostname, sizeof(resolved_hostname) - 1);
+		resolved_hostname[sizeof(resolved_hostname) - 1] = '\0';
+	}
+
+	printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d time=%.2f ms\n", g_ping_config.packet_size, resolved_hostname, g_ping_config.hostname_ip_str, msg_count, received_ttl, elapsed_ms);
 }
 
 void handle_sigalarm(int signal)
@@ -328,7 +338,7 @@ int main(int argc, char **argv)
 	}
 
 	// https://stackoverflow.com/questions/8290046/icmp-sockets-linux
-	if ((sockfd = socket(PF_INET, SOCK_DGRAM, IPPROTO_ICMP)) == -1)
+	if ((sockfd = socket(PF_INET, SOCK_RAW, IPPROTO_ICMP)) == -1)
 	{
 		fprintf(stderr, "ft_ping: An error occured while creating socket: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
